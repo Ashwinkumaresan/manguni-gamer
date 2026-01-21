@@ -1,17 +1,22 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import videoSrc from "./assets/video.mp4";
 import "./App.css";
 
 export default function App() {
+  const [ready, setReady] = useState(false);
 
+  const videoRef = useRef(null);
+  const tapHintRef = useRef(null);
+  const targetRef = useRef(null);
+
+  const userEnabledSoundRef = useRef(false);
+
+  // (Optional) your "disable inspect" stuff — doesn't really secure anything, but kept as-is
   useEffect(() => {
-    // Disable right click
     const handleContextMenu = (e) => e.preventDefault();
     document.addEventListener("contextmenu", handleContextMenu);
 
-    // Disable some function keys and shortcuts
     const handleKeyDown = (e) => {
-      // F12, Ctrl+Shift+I, Ctrl+Shift+C, Ctrl+Shift+J, Ctrl+U
       if (
         e.key === "F12" ||
         (e.ctrlKey && e.shiftKey && ["I", "C", "J"].includes(e.key.toUpperCase())) ||
@@ -28,94 +33,109 @@ export default function App() {
     };
   }, []);
 
+  // Load scripts ONCE and render scene only after they're ready
   useEffect(() => {
-    // Prevent navigation to other pages
-    if (window.location.pathname !== "/") {
-      window.history.replaceState(null, "", "/");
-    }
+    const loadScriptOnce = (id, src) =>
+      new Promise((resolve, reject) => {
+        if (document.getElementById(id)) return resolve();
 
-    // Load A-Frame
-    const aframeScript = document.createElement("script");
-    aframeScript.src = "https://aframe.io/releases/1.4.2/aframe.min.js";
-    aframeScript.async = true;
-
-    // Load MindAR
-    const mindarScript = document.createElement("script");
-    mindarScript.src =
-      "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js";
-    mindarScript.async = true;
-
-    document.head.appendChild(aframeScript);
-    document.head.appendChild(mindarScript);
-
-    let video;
-    let tapHint;
-    let targetEl;
-    let userEnabledSound = false;
-
-    const setupAR = () => {
-      video = document.getElementById("video");
-      tapHint = document.getElementById("tapHint");
-      targetEl = document.getElementById("target0");
-
-      if (!video || !targetEl) return;
-
-      video.muted = true;
-
-      targetEl.addEventListener("targetFound", async () => {
-        try {
-          video.muted = !userEnabledSound;
-          await video.play();
-        } catch (e) { }
+        const s = document.createElement("script");
+        s.id = id;
+        s.src = src;
+        s.async = true;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error(`Failed to load: ${src}`));
+        document.head.appendChild(s);
       });
 
-      targetEl.addEventListener("targetLost", () => {
-        video.pause();
-      });
+    (async () => {
+      try {
+        await loadScriptOnce("aframe-script", "https://aframe.io/releases/1.4.2/aframe.min.js");
+        await loadScriptOnce(
+          "mindar-script",
+          "https://cdn.jsdelivr.net/npm/mind-ar@1.2.5/dist/mindar-image-aframe.prod.js"
+        );
+        setReady(true);
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+  }, []);
 
-      const enableSound = async () => {
-        userEnabledSound = true;
-        video.muted = false;
-        video.volume = 1.0;
+  // Wire up video + target events AFTER scene exists
+  useEffect(() => {
+    if (!ready) return;
 
-        try {
-          await video.play();
-        } catch (e) { }
+    const video = videoRef.current;
+    const tapHint = tapHintRef.current;
+    const targetEl = targetRef.current;
 
-        tapHint.style.display = "none";
-        document.body.removeEventListener("click", enableSound);
-        document.body.removeEventListener("touchstart", enableSound);
-      };
+    if (!video || !tapHint || !targetEl) return;
 
-      document.body.addEventListener("click", enableSound);
-      document.body.addEventListener("touchstart", enableSound);
+    // autoplay policy: start muted
+    video.muted = true;
+    video.playsInline = true;
+
+    const onTargetFound = async () => {
+      try {
+        video.muted = !userEnabledSoundRef.current;
+        await video.play();
+      } catch (e) {}
     };
 
-    // Wait until scripts are ready
-    const interval = setInterval(() => {
-      if (window.AFRAME && window.MINDAR) {
-        clearInterval(interval);
-        setupAR();
-      }
-    }, 200);
+    const onTargetLost = () => {
+      video.pause();
+    };
+
+    const enableSound = async () => {
+      userEnabledSoundRef.current = true;
+      video.muted = false;
+      video.volume = 1.0;
+
+      try {
+        await video.play();
+      } catch (e) {}
+
+      tapHint.style.display = "none";
+      document.body.removeEventListener("click", enableSound);
+      document.body.removeEventListener("touchstart", enableSound);
+    };
+
+    targetEl.addEventListener("targetFound", onTargetFound);
+    targetEl.addEventListener("targetLost", onTargetLost);
+
+    document.body.addEventListener("click", enableSound, { passive: true });
+    document.body.addEventListener("touchstart", enableSound, { passive: true });
 
     return () => {
-      document.head.removeChild(aframeScript);
-      document.head.removeChild(mindarScript);
+      targetEl.removeEventListener("targetFound", onTargetFound);
+      targetEl.removeEventListener("targetLost", onTargetLost);
+      document.body.removeEventListener("click", enableSound);
+      document.body.removeEventListener("touchstart", enableSound);
     };
-  }, []);
+  }, [ready]);
+
+  if (!ready) {
+    return (
+      <div style={{ height: "100vh", display: "grid", placeItems: "center" }}>
+        Loading AR...
+      </div>
+    );
+  }
 
   return (
     <>
-      <div id="tapHint">Tap to unmute 🔊</div>
+      <div id="tapHint" ref={tapHintRef}>
+        Tap to unmute 🔊
+      </div>
 
       <a-scene
         embedded
-        mindar-image="
-          imageTargetSrc: targets.mind;
+        mindar-image={`
+          imageTargetSrc: /targets.mind;
           filterMinCF: 0.001;
           filterBeta: 0.01;
-        "
+        `}
         renderer="alpha: true"
         vr-mode-ui="enabled: false"
         device-orientation-permission-ui="enabled: true"
@@ -123,23 +143,19 @@ export default function App() {
         <a-assets>
           <video
             id="video"
+            ref={videoRef}
             src={videoSrc}
             loop
             muted
             playsInline
             crossOrigin="anonymous"
-          ></video>
+          />
         </a-assets>
 
-        <a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+        <a-camera position="0 0 0" look-controls="enabled: false" />
 
-        <a-entity id="target0" mindar-image-target="targetIndex: 0">
-          <a-video
-            src="#video"
-            width="1"
-            height="1"
-            position="0 0 0"
-          ></a-video>
+        <a-entity id="target0" ref={targetRef} mindar-image-target="targetIndex: 0">
+          <a-video src="#video" width="1" height="1" position="0 0 0" />
         </a-entity>
       </a-scene>
     </>
